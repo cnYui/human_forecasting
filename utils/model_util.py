@@ -60,7 +60,7 @@ def get_model_args(args, data):
 
     if args.dataset == 'ntu':
         num_frames = 60
-    elif args.dataset == 'chi3d':
+    elif args.dataset in ['chi3d', 'interhuman']:
         num_frames = 150
 
     return {'modeltype': '', 'njoints': njoints, 'nfeats': nfeats, 'num_actions': num_actions, 'num_person': num_person, 

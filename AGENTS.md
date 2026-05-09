@@ -14,9 +14,10 @@
 - 已为 `data_loaders/a2m/interhuman.py` 增加 H5 读取路径，同时保留在线 `.pkl` loader。
 - H5 输出与在线 loader 抽样对齐，最大误差为 0。
 - H5 loader 最小训练 smoke 已通过。
+- H5 full smoke 已通过：`save/interhuman/h5_full_1000_smoke_noworkers/model000001000.pt`。
+- InterHuman 训练当前固定 `num_workers=0`，原因是 PyTorch 1.7 多 worker 在提前按 `num_steps` 停止时会阻塞进程退出。
 
 ## 下一步
 
-- 先跑 1000 step H5 full smoke。
-- 再实现 `--grad_accum_steps`。
+- 实现 `--grad_accum_steps`。
 - P5 前必须确认 InterHuman 类别标签来源和 recognition checkpoint 路线。

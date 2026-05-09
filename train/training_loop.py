@@ -56,12 +56,11 @@ class TrainLoop:
         self.resume_step = 0
         self.global_batch = self.batch_size * dist.get_world_size()
         self.num_steps = args.num_steps
-        self.num_epochs = self.num_steps // (len(self.data) * dist.get_world_size() + 1)
-        # self.num_epochs = self.num_steps // (len(self.data) + 1)
 
         self.sync_cuda = torch.cuda.is_available()
 
         self._load_and_sync_parameters()
+        self.num_epochs = self._estimate_num_epochs()
         self.mp_trainer = MixedPrecisionTrainer(
             model=self.model,
             use_fp16=self.use_fp16,
@@ -131,6 +130,17 @@ class TrainLoop:
             self.use_ddp = False
             self.ddp_model = self.model
 
+    def _estimate_num_epochs(self):
+        remaining_steps = max(self.num_steps - self.resume_step, 0)
+        steps_per_epoch = max(len(self.data), 1)
+        return max(int(np.ceil(remaining_steps / steps_per_epoch)), 0)
+
+    def _training_finished(self):
+        return self.step + self.resume_step >= self.num_steps
+
+    def _lr_anneal_finished(self):
+        return self.lr_anneal_steps and self.step + self.resume_step >= self.lr_anneal_steps
+
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
 
@@ -176,44 +186,52 @@ class TrainLoop:
 
         for epoch in range(self.num_epochs):
             print(f'Starting epoch {epoch}:{self.num_epochs}')
-            for motion, cond in tqdm(self.data):
-                if not (not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps):
-                    break
+            data_iter = iter(self.data)
+            progress = tqdm(data_iter, total=len(self.data))
+            try:
+                for motion, cond in progress:
+                    if self._training_finished() or self._lr_anneal_finished():
+                        break
 
-                motion = motion.to(self.device) # [B=64, 25, 6, T=60]
-                """
-                    cond['y']['mask']: [64, 1, 1, 60]
-                    cond['y']['lengths']: [64]
-                    cond['y']['action']: [64, 1]
-                    cond['y']['action_text']: [64, 1]
-                """
-                cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['y'].items()}
+                    motion = motion.to(self.device) # [B=64, 25, 6, T=60]
+                    """
+                        cond['y']['mask']: [64, 1, 1, 60]
+                        cond['y']['lengths']: [64]
+                        cond['y']['action']: [64, 1]
+                        cond['y']['action_text']: [64, 1]
+                    """
+                    cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['y'].items()}
 
-                self.run_step(motion, cond)
-                if self.step % self.log_interval == 0:
-                    for k,v in logger.get_current().name2val.items():
-                        if k == 'loss':
-                            print('step[{}]: loss[{:0.5f}]'.format(self.step+self.resume_step, v))
+                    self.run_step(motion, cond)
+                    if self.step % self.log_interval == 0:
+                        for k,v in logger.get_current().name2val.items():
+                            if k == 'loss':
+                                print('step[{}]: loss[{:0.5f}]'.format(self.step+self.resume_step, v))
 
-                        if k in ['step', 'samples'] or '_q' in k:
-                            continue
-                        else:
-                            self.train_platform.report_scalar(name=k, value=v, iteration=self.step, group_name='Loss')
+                            if k in ['step', 'samples'] or '_q' in k:
+                                continue
+                            else:
+                                self.train_platform.report_scalar(name=k, value=v, iteration=self.step, group_name='Loss')
 
-                if self.step % self.save_interval == 0:
-                    self.save()
-                    self.model.eval()
-                    self.evaluate()
-                    self.model.train()
+                    if self.step % self.save_interval == 0:
+                        self.save()
+                        self.model.eval()
+                        self.evaluate()
+                        self.model.train()
 
-                    # Run for a finite amount of time in integration tests.
-                    if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
-                        return
-                self.step += 1
-            if not (not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps):
+                        # Run for a finite amount of time in integration tests.
+                        if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
+                            return
+                    self.step += 1
+            finally:
+                progress.close()
+                shutdown_workers = getattr(data_iter, "_shutdown_workers", None)
+                if shutdown_workers is not None:
+                    shutdown_workers()
+            if self._training_finished() or self._lr_anneal_finished():
                 break
         # Save the last checkpoint if it wasn't already saved.
-        if (self.step - 1) % self.save_interval != 0:
+        if self.step > 0 and (self.step - 1) % self.save_interval != 0:
             self.save()
             self.evaluate()
 
