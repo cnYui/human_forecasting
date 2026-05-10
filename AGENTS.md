@@ -22,9 +22,10 @@
 - 论文尺寸模型 smoke 已通过：`layers=8, latent_dim=512, lambda_orient/body/transl=1, grad_accum_steps=4, num_steps=100`。
 - 已修复 InterHuman H5 显式 translation loss 的 NaN：translation slot 使用最后一个 joint slot，而不是硬编码 index 55。
 - 论文 batch size 近似 smoke 已通过：`layers=8, latent_dim=512, batch_size=1, grad_accum_steps=64, effective_batch_size=64, num_steps=1000`，耗时 `1:16:09`，最终 checkpoint：`save/interhuman/paper_config_l8_d512_accum64_1000_smoke/model000001000.pt`。
+- 50K baseline 已启动：`layers=8, latent_dim=512, batch_size=1, grad_accum_steps=64, num_steps=50000, save_interval=5000`，保存目录：`save/interhuman/paper_config_l8_d512_accum64_50000_baseline`，launcher PID 记录在 `train.pid`。
 
 ## 下一步
 
-- 进入更长 baseline：先试 `layers=8, latent_dim=512, batch_size=1, grad_accum_steps=64, num_steps=50000`，确认速度、checkpoint 和 loss 稳定性后再决定是否扩到更长。
+- 监控 50K baseline：先确认 `step[100]` loss 有限，再等待 `model000005000.pt` 和 `opt000005000.pt` 写出。
 - 补 InterHuman 专用生成流程：DDIM-5，test-conditioned actor -> generated reactor。
 - P5 前必须确认 InterHuman 类别标签来源和 recognition checkpoint 路线。
