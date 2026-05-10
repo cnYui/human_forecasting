@@ -147,3 +147,15 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Local large assets and experiment outputs
+body_models/
+recognition_training/
+results/
+
+# Local tooling and downloaded artifacts
+.codex
+.codex/
+gh-local/
+*.pdf
+*.deb
