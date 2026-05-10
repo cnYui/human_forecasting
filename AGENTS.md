@@ -18,8 +18,9 @@
 - InterHuman 训练当前固定 `num_workers=0`，原因是 PyTorch 1.7 多 worker 在提前按 `num_steps` 停止时会阻塞进程退出。
 - 已实现 P3 `--grad_accum_steps`；`num_steps` 表示 optimizer steps，`effective_batch_size=batch_size*world_size*grad_accum_steps`。
 - `grad_accum_steps=1` 和 `grad_accum_steps=2` 的短 smoke 已通过，checkpoint 可加载。
+- `num_steps=1000, grad_accum_steps=16` 中等 smoke 已通过，耗时约 7 分钟，最终 checkpoint：`save/interhuman/p3_grad_accum_16_1000_smoke/model000001000.pt`。
 
 ## 下一步
 
-- 跑单卡 baseline 前，先用 `num_steps=1000, grad_accum_steps=16` 做中等 smoke。
+- 进入单卡 baseline：先试 `layers=4, latent_dim=256, batch_size=1, grad_accum_steps=16 或 32, num_steps=50000`。
 - P5 前必须确认 InterHuman 类别标签来源和 recognition checkpoint 路线。
