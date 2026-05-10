@@ -3,7 +3,8 @@ import argparse
 import os
 import json
 
-
+#  model000100000.pt -> 权重
+#  args.json         -> 构造同样模型所需的配置
 def parse_and_load_from_model(parser):
     # 从已训练模型同目录的 args.json 恢复参数。
     # 不要在命令行手动指定这些参数，因为后面会被 args.json 中的训练配置覆盖。
@@ -37,6 +38,7 @@ def parse_and_load_from_model(parser):
         args.guidance_param = 1
     return args
 
+#  用于“加载已有模型做条件生成”，保证模型结构一致，同时允许你换数据文件做生成。
 def parse_and_load_from_model_wo_data(parser):
     # 从已训练模型同目录的 args.json 恢复模型和扩散参数，但不覆盖数据集参数。
     # cgenerate 会显式传入数据相关参数，因此这里不加载 data options。
