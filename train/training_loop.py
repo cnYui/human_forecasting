@@ -1,4 +1,5 @@
 import copy
+import contextlib
 import functools
 import os
 import time
@@ -38,6 +39,7 @@ class TrainLoop:
         self.data = data
         self.batch_size = args.batch_size
         self.microbatch = args.batch_size  # deprecating this option
+        self.grad_accum_steps = max(1, int(getattr(args, 'grad_accum_steps', 1)))
         self.lr = args.lr
         self.ema_rate = "0.9999"
         self.log_interval = args.log_interval
@@ -54,7 +56,9 @@ class TrainLoop:
         )
         self.step = 0
         self.resume_step = 0
-        self.global_batch = self.batch_size * dist.get_world_size()
+        self.data_step = 0
+        self.accumulated_batches = 0
+        self.global_batch = self.batch_size * dist.get_world_size() * self.grad_accum_steps
         self.num_steps = args.num_steps
 
         self.sync_cuda = torch.cuda.is_available()
@@ -133,7 +137,8 @@ class TrainLoop:
     def _estimate_num_epochs(self):
         remaining_steps = max(self.num_steps - self.resume_step, 0)
         steps_per_epoch = max(len(self.data), 1)
-        return max(int(np.ceil(remaining_steps / steps_per_epoch)), 0)
+        required_data_steps = remaining_steps * self.grad_accum_steps
+        return max(int(np.ceil(required_data_steps / steps_per_epoch)), 0)
 
     def _training_finished(self):
         return self.step + self.resume_step >= self.num_steps
@@ -202,27 +207,28 @@ class TrainLoop:
                     """
                     cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['y'].items()}
 
-                    self.run_step(motion, cond)
-                    if self.step % self.log_interval == 0:
-                        for k,v in logger.get_current().name2val.items():
-                            if k == 'loss':
-                                print('step[{}]: loss[{:0.5f}]'.format(self.step+self.resume_step, v))
+                    optimized = self.run_step(motion, cond)
+                    if optimized:
+                        if self.step % self.log_interval == 0:
+                            for k,v in logger.get_current().name2val.items():
+                                if k == 'loss':
+                                    print('step[{}]: loss[{:0.5f}]'.format(self.step+self.resume_step, v))
 
-                            if k in ['step', 'samples'] or '_q' in k:
-                                continue
-                            else:
-                                self.train_platform.report_scalar(name=k, value=v, iteration=self.step, group_name='Loss')
+                                if k in ['step', 'samples', 'data_step', 'effective_batch_size'] or '_q' in k:
+                                    continue
+                                else:
+                                    self.train_platform.report_scalar(name=k, value=v, iteration=self.step, group_name='Loss')
 
-                    if self.step % self.save_interval == 0:
-                        self.save()
-                        self.model.eval()
-                        self.evaluate()
-                        self.model.train()
+                        if self.step % self.save_interval == 0:
+                            self.save()
+                            self.model.eval()
+                            self.evaluate()
+                            self.model.train()
 
-                        # Run for a finite amount of time in integration tests.
-                        if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
-                            return
-                    self.step += 1
+                            # Run for a finite amount of time in integration tests.
+                            if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
+                                return
+                        self.step += 1
             finally:
                 progress.close()
                 shutdown_workers = getattr(data_iter, "_shutdown_workers", None)
@@ -276,13 +282,29 @@ class TrainLoop:
 
 
     def run_step(self, batch, cond):
-        self.forward_backward(batch, cond)
+        if self.accumulated_batches == 0:
+            self.mp_trainer.zero_grad()
+
+        self.accumulated_batches += 1
+        self.data_step += 1
+        sync_grad = self.accumulated_batches == self.grad_accum_steps
+
+        self.forward_backward(
+            batch,
+            cond,
+            sync_grad=sync_grad,
+            loss_scale=1.0 / self.grad_accum_steps,
+        )
+        if not sync_grad:
+            return False
+
         self.mp_trainer.optimize(self.opt)
         self._anneal_lr()
         self.log_step()
+        self.accumulated_batches = 0
+        return True
 
-    def forward_backward(self, batch, cond):
-        self.mp_trainer.zero_grad()
+    def forward_backward(self, batch, cond, sync_grad=True, loss_scale=1.0):
         for i in range(0, batch.shape[0], self.microbatch):
             # Eliminates the microbatch feature
             assert i == 0
@@ -302,22 +324,24 @@ class TrainLoop:
                 dataset=self.data.dataset
             )
 
-            if last_batch or not self.use_ddp:
-                losses = compute_losses()
-            else:
-                with self.ddp_model.no_sync():
-                    losses = compute_losses()
-
-            if isinstance(self.schedule_sampler, LossAwareSampler):
-                self.schedule_sampler.update_with_local_losses(
-                    t, losses["loss"].detach()
-                )
-
-            loss = (losses["loss"] * weights).mean()
-            log_loss_dict(
-                self.diffusion, t, {k: v * weights for k, v in losses.items()}
+            context = (
+                contextlib.nullcontext()
+                if sync_grad or not self.use_ddp
+                else self.ddp_model.no_sync()
             )
-            self.mp_trainer.backward(loss)
+            with context:
+                losses = compute_losses()
+
+                if isinstance(self.schedule_sampler, LossAwareSampler):
+                    self.schedule_sampler.update_with_local_losses(
+                        t, losses["loss"].detach()
+                    )
+
+                loss = (losses["loss"] * weights).mean()
+                log_loss_dict(
+                    self.diffusion, t, {k: v * weights for k, v in losses.items()}
+                )
+                self.mp_trainer.backward(loss * loss_scale)
 
     def _anneal_lr(self):
         if not self.lr_anneal_steps:
@@ -329,6 +353,11 @@ class TrainLoop:
 
     def log_step(self):
         logger.logkv("step", self.step + self.resume_step)
+        logger.logkv(
+            "data_step",
+            (self.step + self.resume_step) * self.grad_accum_steps + self.accumulated_batches,
+        )
+        logger.logkv("effective_batch_size", self.global_batch)
         logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
 
 

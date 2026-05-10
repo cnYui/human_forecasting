@@ -16,8 +16,10 @@
 - H5 loader 最小训练 smoke 已通过。
 - H5 full smoke 已通过：`save/interhuman/h5_full_1000_smoke_noworkers/model000001000.pt`。
 - InterHuman 训练当前固定 `num_workers=0`，原因是 PyTorch 1.7 多 worker 在提前按 `num_steps` 停止时会阻塞进程退出。
+- 已实现 P3 `--grad_accum_steps`；`num_steps` 表示 optimizer steps，`effective_batch_size=batch_size*world_size*grad_accum_steps`。
+- `grad_accum_steps=1` 和 `grad_accum_steps=2` 的短 smoke 已通过，checkpoint 可加载。
 
 ## 下一步
 
-- 实现 `--grad_accum_steps`。
+- 跑单卡 baseline 前，先用 `num_steps=1000, grad_accum_steps=16` 做中等 smoke。
 - P5 前必须确认 InterHuman 类别标签来源和 recognition checkpoint 路线。
