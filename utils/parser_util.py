@@ -3,7 +3,8 @@ import argparse
 import os
 import json
 
-
+#  model000100000.pt -> 权重
+#  args.json         -> 构造同样模型所需的配置
 def parse_and_load_from_model(parser):
     # 从已训练模型同目录的 args.json 恢复参数。
     # 不要在命令行手动指定这些参数，因为后面会被 args.json 中的训练配置覆盖。
@@ -37,6 +38,7 @@ def parse_and_load_from_model(parser):
         args.guidance_param = 1
     return args
 
+#  用于“加载已有模型做条件生成”，保证模型结构一致，同时允许你换数据文件做生成。
 def parse_and_load_from_model_wo_data(parser):
     # 从已训练模型同目录的 args.json 恢复模型和扩散参数，但不覆盖数据集参数。
     # cgenerate 会显式传入数据相关参数，因此这里不加载 data options。
@@ -146,7 +148,7 @@ def add_model_options(parser):
 def add_data_options(parser):
     # 数据参数：决定读取哪个数据集、几个人、动作表示格式和人体模型类型。
     group = parser.add_argument_group('dataset')
-    group.add_argument("--dataset", default='humanml', choices=['humanml', 'kit', 'humanact12', 'uestc', 'ntu', 'chi3d', 'gta', 'sbu'], type=str,
+    group.add_argument("--dataset", default='humanml', choices=['humanml', 'kit', 'humanact12', 'uestc', 'ntu', 'chi3d', 'interhuman', 'gta', 'sbu'], type=str,
                        help="Dataset name (choose from list).")
     group.add_argument("--data_dir", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
@@ -157,6 +159,8 @@ def add_data_options(parser):
                        help="Use SMPL model or SMPl-X model.")
     group.add_argument("--vel_threshold", default=0.01, type=float, help="Threshold of the velocity.")
     group.add_argument("--shuffle", action='store_true', help="Shuffle the actor-reactor order during training.")
+    group.add_argument("--max_samples", default=-1, type=int,
+                       help="Limit dataset samples for smoke tests. -1 uses all samples.")
 
 def add_training_options(parser):
     # 训练参数：控制保存目录、优化器、训练步数、日志、checkpoint 和训练中评估。
@@ -187,6 +191,8 @@ def add_training_options(parser):
                        help="Save checkpoints and run evaluation each N steps")
     group.add_argument("--num_steps", default=600_000, type=int,
                        help="Training will stop after the specified number of steps.")
+    group.add_argument("--grad_accum_steps", default=1, type=int,
+                       help="Number of forward/backward passes before each optimizer step.")
     group.add_argument("--num_frames", default=60, type=int,
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
     group.add_argument("--resume_checkpoint", default="", type=str,

@@ -4,7 +4,7 @@ Adhere to their licence to use this script
 It has been modified
 """
 import os
-os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
+os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 import math
 import trimesh
 import pyrender
@@ -141,7 +141,7 @@ class Renderer:
 
         rgb, _ = self.renderer.render(self.scene, flags=render_flags)
         valid_mask = (rgb[:, :, -1] > 0)[:, :, np.newaxis]
-        output_img = rgb * valid_mask + (1 - valid_mask) * img
+        output_img = rgb[:, :, :3] * valid_mask + (1 - valid_mask) * img
         image = output_img.astype(np.uint8)
         for mesh_node in mesh_node_list:
             self.scene.remove_node(mesh_node)
