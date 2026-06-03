@@ -65,6 +65,15 @@
 - P2 metrics sanity 已通过：test split `508` 条样本，`pred == target` 时所有固定指标均为 `0.0`。
 - P2 repeat baseline 已完成 test split 评估，结果保存到 `save/forecasting/interhuman/repeat_150_30_120/metrics_test.json` 和 `metrics_test.yaml`；`future_mse=0.036892867478446695`，`long_mse=0.05112874942032371`，`relative_root_distance_error=0.255221389058068`，`relative_orientation_error=0.5552304635836384`，`inter_person_distance_consistency=0.006041959892430409`。
 - 下一步进入 P3：实现 independent predictor 和 concat no-relation predictor；必须复用 P2 evaluator，不得另写指标口径。
+- 已新建 P3 计划文档：`docs/ai/context/20260603-195707-forecasting-p3-baselines-plan.md`；P3 只实现 independent / concat 两个可训练 baseline、supervised training loop、checkpoint evaluation 和结果落盘，不进入 relation-aware model。
+- P3 默认训练预算为 `hidden_dim=256, num_layers=2, batch_size=32, num_steps=5000, lr=1e-3, weight_decay=1e-4, seed=0, num_workers=0`；如 5000 steps 未超过 repeat baseline，可追加到 10000 steps，但必须在 P3 结果文档记录原因。
+- P3 验收必须记录参数量、训练预算和 seed；independent 与 concat 都至少需要在 test `future_mse` 上优于 repeat baseline `0.036892867478446695`，否则不得进入 P4。
+- Forecasting P3 已完成，结果记录见 `docs/ai/context/20260603-201148-forecasting-p3-baselines-result.md`。
+- P3 新增实现：`model/forecasting.py`、`train/train_forecasting.py`；扩展 `eval/eval_forecasting.py --mode checkpoint`。
+- P3 concat baseline 完整训练已通过：`save/forecasting/interhuman/p3_concat_h256_l2_s0_5000/model000005000.pt`，`num_params=9951440`，test `future_mse=0.031901971752366684`，`long_mse=0.03789569738167008`。
+- P3 independent baseline 完整训练已通过：`save/forecasting/interhuman/p3_independent_h256_l2_s0_5000/model000005000.pt`，`num_params=5305064`，test `future_mse=0.02874350040329723`，`long_mse=0.03612076791780671`。
+- P3 重要观察：当前 seed=0 下 independent 强于 concat，且两者 relation metrics 都未优于 repeat；P4/P5 必须同时报告 independent 与 concat，不得只用“赢 concat”包装 relation-aware 结论。
+- 下一步进入 P4：实现 relation-aware joint predictor；必须复用 P2 evaluator 和 P3 training/checkpoint contract。
 
 ## 2026-06-03 Skill 安装
 

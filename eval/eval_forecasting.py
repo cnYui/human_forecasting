@@ -9,6 +9,11 @@ import torch
 from torch.utils.data import DataLoader
 
 from data_loaders.forecasting import InterHumanForecastDataset, forecasting_collate
+from model.forecasting import (
+    count_parameters,
+    create_forecasting_model_from_config,
+    ensure_prediction_shape,
+)
 from utils.forecasting_metrics import METRIC_KEYS, compute_forecasting_metrics
 from utils.forecasting_motion import (
     PERSON_DIM,
@@ -166,6 +171,12 @@ def _repeat_last_observation(obs, pred_len):
         raise ValueError("obs 必须是 [B,T,2,147]")
     last = obs[:, -1:].contiguous()
     return last.expand(-1, pred_len, -1, -1).contiguous()
+
+
+def _forecasting_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
 
 
 def _check_item_shapes_and_finite(datasets, obs_len, pred_len):
@@ -460,6 +471,134 @@ def run_repeat(args):
     return summary
 
 
+def _checkpoint_config_from_state(state, args):
+    if "model_config" not in state:
+        raise ValueError("checkpoint 缺少 model_config，无法构造 forecasting model")
+    config = dict(state["model_config"])
+    if args.model_type is not None and config.get("model_type") != args.model_type:
+        raise ValueError(
+            "checkpoint model_type={} 与命令行 model_type={} 不一致".format(
+                config.get("model_type"), args.model_type
+            )
+        )
+    return config
+
+
+def _load_checkpoint_model(args, device):
+    if args.checkpoint is None:
+        raise ValueError("--mode checkpoint 必须提供 --checkpoint")
+    state = torch.load(args.checkpoint, map_location=device)
+    if "model_state_dict" not in state:
+        raise ValueError("checkpoint 缺少 model_state_dict")
+
+    config = _checkpoint_config_from_state(state, args)
+    model = create_forecasting_model_from_config(config)
+    model.load_state_dict(state["model_state_dict"])
+    model.to(device)
+    model.eval()
+    return model, state, config
+
+
+def evaluate_forecasting_model(
+    args,
+    model,
+    normalizer,
+    model_type,
+    checkpoint_path=None,
+    checkpoint_state=None,
+    device=None,
+):
+    if args.dataset != "interhuman":
+        raise ValueError("P3 checkpoint 评估只支持 interhuman dataset")
+
+    if device is None:
+        device = _forecasting_device()
+
+    dataset = _build_dataset(args, args.split)
+    _check_split_dataset_length(dataset, args.max_samples)
+    loader = _build_loader(args, dataset)
+
+    metric_sums = OrderedDict((key, 0.0) for key in METRIC_KEYS)
+    num_samples = 0
+    model.eval()
+
+    with torch.no_grad():
+        for obs, target, meta in loader:
+            obs_device = obs.to(device)
+            pred_normalized = model(normalizer.normalize(obs_device))
+            ensure_prediction_shape(
+                pred_normalized,
+                batch_size=int(obs.shape[0]),
+                pred_len=args.pred_len,
+            )
+            pred = normalizer.denormalize(pred_normalized).detach().cpu()
+            metrics = compute_forecasting_metrics(pred, target, obs)
+            batch_size = int(obs.shape[0])
+            _aggregate_metrics(metric_sums, metrics, batch_size)
+            num_samples += batch_size
+
+    if num_samples != len(dataset):
+        raise AssertionError(
+            "checkpoint 评估样本数应为 {}，实际为 {}".format(len(dataset), num_samples)
+        )
+
+    final_metrics = OrderedDict()
+    for key in METRIC_KEYS:
+        final_metrics[key] = metric_sums[key] / float(num_samples)
+    _assert_metrics_finite(final_metrics)
+
+    summary = OrderedDict()
+    summary["mode"] = "checkpoint"
+    summary["dataset"] = args.dataset
+    summary["split"] = args.split
+    summary["data_path"] = args.data_path
+    summary["model_type"] = model_type
+    summary["checkpoint"] = checkpoint_path
+    summary["checkpoint_step"] = None
+    if checkpoint_state is not None:
+        summary["checkpoint_step"] = checkpoint_state.get("step")
+    summary["normalizer"] = args.normalizer
+    summary["window_len"] = args.window_len
+    summary["obs_len"] = args.obs_len
+    summary["pred_len"] = args.pred_len
+    summary["batch_size"] = args.batch_size
+    summary["num_workers"] = args.num_workers
+    summary["num_samples"] = int(num_samples)
+    summary["num_params"] = count_parameters(model)
+    summary["metrics_keys"] = list(METRIC_KEYS)
+    summary["metrics"] = final_metrics
+    summary["created_at"] = _utc_now()
+
+    json_name = "metrics_{}.json".format(args.split)
+    yaml_name = "metrics_{}.yaml".format(args.split)
+    summary["output_files"] = {
+        "json": os.path.join(args.save_dir, json_name),
+        "yaml": os.path.join(args.save_dir, yaml_name),
+    }
+    _write_summary(args.save_dir, json_name, yaml_name, summary)
+    print(json.dumps(summary, indent=2, sort_keys=False, ensure_ascii=False))
+    return summary
+
+
+def run_checkpoint(args):
+    device = _forecasting_device()
+    model, state, config = _load_checkpoint_model(args, device)
+    if args.normalizer is None:
+        args.normalizer = state.get("normalizer_path")
+    if args.normalizer is None:
+        args.normalizer = args.save_dir
+    normalizer = load_forecasting_normalizer(args.normalizer)
+    return evaluate_forecasting_model(
+        args=args,
+        model=model,
+        normalizer=normalizer,
+        model_type=config["model_type"],
+        checkpoint_path=args.checkpoint,
+        checkpoint_state=state,
+        device=device,
+    )
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -477,6 +616,9 @@ def build_arg_parser():
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--max_samples", type=int, default=-1)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--checkpoint", default=None)
+    parser.add_argument("--model_type", default=None, choices=["independent", "concat"])
+    parser.add_argument("--normalizer", default=None)
     parser.add_argument(
         "--save_dir",
         default=None,
@@ -499,7 +641,8 @@ def main():
         run_repeat(args)
         return
     if args.mode == "checkpoint":
-        raise NotImplementedError("checkpoint evaluation 将在 P3/P4 接入")
+        run_checkpoint(args)
+        return
     raise ValueError("unsupported mode: {}".format(args.mode))
 
 
