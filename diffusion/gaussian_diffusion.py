@@ -1383,8 +1383,10 @@ class GaussianDiffusion:
                 terms["body"] = body_diff
             if self.lambda_transl > 0.:
                 # 3. Relative root translation loss
-                cmotion_transl = cmotion[:,55:56,0:3,:]
-                target_transl, model_output_transl = target[:,55:56,0:3,:], model_output[:,55:56,0:3,:]
+                # 最后一个 slot 保存 root translation；兼容 56-slot SMPL-X 和 25-slot InterHuman H5 表示。
+                cmotion_transl = cmotion[:, -1:, 0:3, :]
+                target_transl = target[:, -1:, 0:3, :]
+                model_output_transl = model_output[:, -1:, 0:3, :]
                 gt_transl_diff = torch.linalg.norm(cmotion_transl - target_transl, axis=2)
                 model_output_transl_diff = torch.linalg.norm(cmotion_transl - model_output_transl, axis=2)
                 transl_diff = self.masked_l2(gt_transl_diff, model_output_transl_diff, mask.squeeze(1))

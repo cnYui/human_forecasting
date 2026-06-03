@@ -9,11 +9,23 @@ def load_model_wo_clip(model, state_dict):
 
 
 def create_model_and_diffusion(args, data):
+    # 1. 读取命令行里的训练框架设置；当前 ReGenNet 主路径使用 setting='cmdm'。
     setting = args.setting
+
+    # 2. 如果是 CMDM 框架，就创建条件动作扩散模型。
     if setting == 'cmdm':
+        # 3. get_model_args 会根据命令行参数和数据集信息整理 CMDM 构造参数。
+        #    ** 会把返回的 dict 展开成 CMDM(...) 的关键字参数。
         model = CMDM(**get_model_args(args, data))
-        args.num_person = 1 # Attention here
+
+        # 4. 原始 batch 是双人数据，但 ccollate 已经拆成 actor 条件 cmotion 和 reactor 目标 motion。
+        #    diffusion 只负责给 reactor 这个单人目标动作加噪、去噪和算 loss。
+        args.num_person = 1
+
+    # 5. 创建高斯扩散过程；它定义训练时怎么加噪、怎么算 loss，以及采样时怎么去噪。
     diffusion = create_gaussian_diffusion(args)
+
+    # 6. 返回神经网络 model 和扩散过程 diffusion，后续会交给 TrainLoop 使用。
     return model, diffusion
 
 
@@ -60,7 +72,7 @@ def get_model_args(args, data):
 
     if args.dataset == 'ntu':
         num_frames = 60
-    elif args.dataset == 'chi3d':
+    elif args.dataset in ['chi3d', 'interhuman']:
         num_frames = 150
 
     return {'modeltype': '', 'njoints': njoints, 'nfeats': nfeats, 'num_actions': num_actions, 'num_person': num_person, 
