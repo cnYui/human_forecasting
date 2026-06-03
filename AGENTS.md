@@ -59,6 +59,12 @@
 - P1 smoke 已通过：train/val/test 可用样本为 `2910/226/508`，batch shape 为 `obs=[4,30,2,147]`、`target=[4,120,2,147]`，active roundtrip 误差 `0.0`，normalizer roundtrip 误差 `1.1920928955078125e-07`。
 - P1 normalizer 已生成：`save/forecasting/interhuman/p1_dataset_smoke/normalizer.pt` 和 `normalizer.json`；统计使用 train-only `T>=150` 序列共 `2910` 条、`1481944` 帧。
 - 下一步进入 P2：实现 original-scale metrics 和 repeat baseline evaluator；不得重新定义 P1 数据协议。
+- 已新建 P2 计划文档：`docs/ai/context/20260603-194249-forecasting-p2-plan.md`；P2 只实现 original-scale metrics、metrics sanity 和 repeat baseline，不进入 P3 模型训练。
+- Forecasting P2 已完成，结果记录见 `docs/ai/context/20260603-194749-forecasting-p2-metrics-repeat-result.md`。
+- P2 新增实现：`utils/forecasting_metrics.py`；扩展 `eval/eval_forecasting.py --mode metrics_sanity|repeat|checkpoint`。
+- P2 metrics sanity 已通过：test split `508` 条样本，`pred == target` 时所有固定指标均为 `0.0`。
+- P2 repeat baseline 已完成 test split 评估，结果保存到 `save/forecasting/interhuman/repeat_150_30_120/metrics_test.json` 和 `metrics_test.yaml`；`future_mse=0.036892867478446695`，`long_mse=0.05112874942032371`，`relative_root_distance_error=0.255221389058068`，`relative_orientation_error=0.5552304635836384`，`inter_person_distance_consistency=0.006041959892430409`。
+- 下一步进入 P3：实现 independent predictor 和 concat no-relation predictor；必须复用 P2 evaluator，不得另写指标口径。
 
 ## 2026-06-03 Skill 安装
 
