@@ -1,5 +1,7 @@
 import argparse
+import csv
 import json
+import math
 import os
 from collections import OrderedDict
 from datetime import datetime
@@ -10,6 +12,7 @@ from torch.utils.data import DataLoader
 
 from data_loaders.forecasting import InterHumanForecastDataset, forecasting_collate
 from model.forecasting import (
+    FORECASTING_MODEL_TYPES,
     count_parameters,
     create_forecasting_model_from_config,
     ensure_prediction_shape,
@@ -156,12 +159,23 @@ def _write_summary(save_dir, json_name, yaml_name, summary):
     return json_path, yaml_path
 
 
+def _read_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def _write_json(path, value):
+    with open(path, "w") as f:
+        json.dump(value, f, indent=2, sort_keys=False, ensure_ascii=False)
+
+
 def _default_save_dir(mode):
     defaults = {
         "dataset_smoke": "save/forecasting/interhuman/p1_dataset_smoke",
         "metrics_sanity": "save/forecasting/interhuman/p2_metrics_sanity",
         "repeat": "save/forecasting/interhuman/repeat_150_30_120",
         "checkpoint": "save/forecasting/interhuman/checkpoint_eval",
+        "aggregate": "results/forecasting/interhuman/aggregate",
     }
     return defaults[mode]
 
@@ -509,7 +523,7 @@ def evaluate_forecasting_model(
     device=None,
 ):
     if args.dataset != "interhuman":
-        raise ValueError("P3 checkpoint 评估只支持 interhuman dataset")
+        raise ValueError("checkpoint 评估只支持 interhuman dataset")
 
     if device is None:
         device = _forecasting_device()
@@ -599,12 +613,219 @@ def run_checkpoint(args):
     )
 
 
+def _std(values):
+    if len(values) <= 1:
+        return 0.0
+    mean = sum(values) / float(len(values))
+    var = sum((value - mean) * (value - mean) for value in values) / float(len(values) - 1)
+    return math.sqrt(var)
+
+
+def _maybe_read_args(run_dir):
+    if run_dir is None:
+        return {}
+    args_path = os.path.join(run_dir, "args.json")
+    if not os.path.exists(args_path):
+        return {}
+    return _read_json(args_path)
+
+
+def _checkpoint_num_params(path):
+    if path is None or not os.path.exists(path):
+        return None
+    state = torch.load(path, map_location="cpu")
+    return state.get("num_params")
+
+
+def _resolve_run_from_manifest(run, protocol):
+    resolved = OrderedDict()
+    run_dir = run.get("run_dir")
+    split = protocol.get("split", "test")
+    metrics_path = run.get("metrics_path")
+    if metrics_path is None:
+        if run_dir is None:
+            raise ValueError("manifest run 缺少 metrics_path 或 run_dir")
+        metrics_path = os.path.join(run_dir, "metrics_{}.json".format(split))
+    if not os.path.exists(metrics_path):
+        raise FileNotFoundError(metrics_path)
+
+    metrics_summary = _read_json(metrics_path)
+    metrics = metrics_summary.get("metrics")
+    if metrics is None:
+        raise ValueError("{} 缺少 metrics 字段".format(metrics_path))
+    _assert_metric_keys(metrics)
+    _assert_metrics_finite(metrics)
+
+    args_data = _maybe_read_args(run_dir)
+    checkpoint = run.get("checkpoint")
+    if checkpoint is None and run_dir is not None:
+        checkpoint_step = run.get("checkpoint_step", args_data.get("num_steps"))
+        if checkpoint_step is not None:
+            checkpoint = os.path.join(run_dir, "model{:09d}.pt".format(int(checkpoint_step)))
+
+    method = run.get("method")
+    if method is None:
+        raise ValueError("manifest run 缺少 method: {}".format(run))
+    variant = run.get("variant", "default")
+    seed = run.get("seed", args_data.get("seed"))
+    if seed is None:
+        raise ValueError("manifest run 缺少 seed: {}".format(run))
+
+    num_params = run.get("num_params")
+    if num_params is None:
+        num_params = metrics_summary.get("num_params")
+    if num_params is None:
+        num_params = args_data.get("num_params")
+    if num_params is None:
+        num_params = _checkpoint_num_params(checkpoint)
+    if num_params is None and method == "repeat":
+        num_params = 0
+    if num_params is None:
+        raise ValueError("无法解析 num_params: {}".format(run))
+
+    resolved["table"] = run.get("table", "main")
+    resolved["method"] = method
+    resolved["variant"] = variant
+    resolved["seed"] = int(seed)
+    resolved["run_dir"] = run_dir
+    resolved["metrics_path"] = metrics_path
+    resolved["checkpoint"] = checkpoint
+    resolved["num_params"] = int(num_params)
+    resolved["metrics"] = OrderedDict((key, float(metrics[key])) for key in METRIC_KEYS)
+    return resolved
+
+
+def _summarize_group(table, method, variant, runs):
+    row = OrderedDict()
+    row["table"] = table
+    row["method"] = method
+    row["variant"] = variant
+    row["num_runs"] = len(runs)
+    row["seeds"] = sorted([run["seed"] for run in runs])
+
+    params = [float(run["num_params"]) for run in runs]
+    row["params_mean"] = sum(params) / float(len(params))
+    row["params_std"] = _std(params)
+    for key in METRIC_KEYS:
+        values = [run["metrics"][key] for run in runs]
+        row["{}_mean".format(key)] = sum(values) / float(len(values))
+        row["{}_std".format(key)] = _std(values)
+    return row
+
+
+def _aggregate_rows(resolved_runs):
+    groups = OrderedDict()
+    for run in resolved_runs:
+        key = (run["table"], run["method"], run["variant"])
+        groups.setdefault(key, []).append(run)
+
+    rows = []
+    for key, runs in groups.items():
+        rows.append(_summarize_group(key[0], key[1], key[2], runs))
+    return rows
+
+
+def _aggregate_columns():
+    columns = [
+        "table",
+        "method",
+        "variant",
+        "num_runs",
+        "seeds",
+        "params_mean",
+        "params_std",
+    ]
+    for key in METRIC_KEYS:
+        columns.append("{}_mean".format(key))
+        columns.append("{}_std".format(key))
+    return columns
+
+
+def _csv_value(value):
+    if isinstance(value, list):
+        return "|".join(str(item) for item in value)
+    return value
+
+
+def _write_aggregate_csv(path, rows):
+    columns = _aggregate_columns()
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=columns)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: _csv_value(row.get(key)) for key in columns})
+
+
+def _write_aggregate_markdown(path, rows):
+    columns = _aggregate_columns()
+    with open(path, "w") as f:
+        f.write("| {} |\n".format(" | ".join(columns)))
+        f.write("| {} |\n".format(" | ".join(["---"] * len(columns))))
+        for row in rows:
+            values = []
+            for key in columns:
+                value = row.get(key)
+                if isinstance(value, float):
+                    value = "{:.10g}".format(value)
+                elif isinstance(value, list):
+                    value = ",".join(str(item) for item in value)
+                values.append(str(value))
+            f.write("| {} |\n".format(" | ".join(values)))
+
+
+def run_aggregate(args):
+    if args.manifest is None:
+        raise ValueError("--mode aggregate 必须提供 --manifest")
+    manifest = _read_json(args.manifest)
+    protocol = manifest.get("protocol", {})
+    runs = manifest.get("runs")
+    if not isinstance(runs, list) or len(runs) == 0:
+        raise ValueError("manifest 必须包含非空 runs 列表")
+
+    resolved_runs = [_resolve_run_from_manifest(run, protocol) for run in runs]
+    rows = _aggregate_rows(resolved_runs)
+
+    os.makedirs(args.save_dir, exist_ok=True)
+    summary_json = os.path.join(args.save_dir, "summary.json")
+    summary_csv = os.path.join(args.save_dir, "summary.csv")
+    summary_md = os.path.join(args.save_dir, "summary.md")
+    resolved_manifest_path = os.path.join(args.save_dir, "manifest.resolved.json")
+
+    summary = OrderedDict()
+    summary["mode"] = "aggregate"
+    summary["manifest"] = args.manifest
+    summary["protocol"] = protocol
+    summary["num_runs"] = len(resolved_runs)
+    summary["rows"] = rows
+    summary["created_at"] = _utc_now()
+    summary["output_files"] = {
+        "json": summary_json,
+        "csv": summary_csv,
+        "md": summary_md,
+        "resolved_manifest": resolved_manifest_path,
+    }
+
+    _write_json(summary_json, summary)
+    _write_aggregate_csv(summary_csv, rows)
+    _write_aggregate_markdown(summary_md, rows)
+    _write_json(
+        resolved_manifest_path,
+        {
+            "protocol": protocol,
+            "runs": resolved_runs,
+            "created_at": summary["created_at"],
+        },
+    )
+    print(json.dumps(summary, indent=2, sort_keys=False, ensure_ascii=False))
+    return summary
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
         required=True,
-        choices=["dataset_smoke", "metrics_sanity", "repeat", "checkpoint"],
+        choices=["dataset_smoke", "metrics_sanity", "repeat", "checkpoint", "aggregate"],
     )
     parser.add_argument("--dataset", default="interhuman")
     parser.add_argument("--data_path", default="dataset/interhuman/smpl/conditioned")
@@ -617,8 +838,9 @@ def build_arg_parser():
     parser.add_argument("--max_samples", type=int, default=-1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--checkpoint", default=None)
-    parser.add_argument("--model_type", default=None, choices=["independent", "concat"])
+    parser.add_argument("--model_type", default=None, choices=FORECASTING_MODEL_TYPES)
     parser.add_argument("--normalizer", default=None)
+    parser.add_argument("--manifest", default=None)
     parser.add_argument(
         "--save_dir",
         default=None,
@@ -642,6 +864,9 @@ def main():
         return
     if args.mode == "checkpoint":
         run_checkpoint(args)
+        return
+    if args.mode == "aggregate":
+        run_aggregate(args)
         return
     raise ValueError("unsupported mode: {}".format(args.mode))
 

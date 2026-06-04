@@ -14,12 +14,17 @@ from data_loaders.forecasting import InterHumanForecastDataset, forecasting_coll
 from eval.eval_forecasting import evaluate_forecasting_model
 from model.forecasting import (
     FORECASTING_MODEL_TYPES,
+    RELATION_ENCODER_TYPES,
     count_parameters,
     create_forecasting_model,
     ensure_prediction_shape,
 )
 from utils.fixseed import fixseed
-from utils.forecasting_motion import compute_forecasting_normalizer, load_forecasting_normalizer
+from utils.forecasting_motion import (
+    RELATION_FEATURE_SETS,
+    compute_forecasting_normalizer,
+    load_forecasting_normalizer,
+)
 
 
 def _utc_now():
@@ -207,7 +212,7 @@ def _train_step(model, normalizer, obs, target, args, device):
 
 def run_training(args):
     if args.dataset != "interhuman":
-        raise ValueError("P3 只支持 interhuman dataset")
+        raise ValueError("forecasting 训练只支持 interhuman dataset")
     if args.obs_len + args.pred_len != args.window_len:
         raise ValueError("obs_len + pred_len 必须等于 window_len")
 
@@ -225,6 +230,10 @@ def run_training(args):
         pred_len=args.pred_len,
         hidden_dim=args.hidden_dim,
         num_layers=args.num_layers,
+        relation_hidden_dim=args.relation_hidden_dim,
+        relation_num_layers=args.relation_num_layers,
+        relation_feature_set=args.relation_feature_set,
+        relation_encoder_type=args.relation_encoder_type,
     )
     model.to(device)
     args.num_params = count_parameters(model)
@@ -325,6 +334,10 @@ def build_arg_parser():
     parser.add_argument("--num_steps", type=int, default=5000)
     parser.add_argument("--hidden_dim", type=int, default=256)
     parser.add_argument("--num_layers", type=int, default=2)
+    parser.add_argument("--relation_hidden_dim", type=int, default=128)
+    parser.add_argument("--relation_num_layers", type=int, default=1)
+    parser.add_argument("--relation_feature_set", default="all", choices=RELATION_FEATURE_SETS)
+    parser.add_argument("--relation_encoder_type", default="gru", choices=RELATION_ENCODER_TYPES)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--grad_accum_steps", type=int, default=1)

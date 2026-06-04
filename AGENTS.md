@@ -74,6 +74,52 @@
 - P3 independent baseline 完整训练已通过：`save/forecasting/interhuman/p3_independent_h256_l2_s0_5000/model000005000.pt`，`num_params=5305064`，test `future_mse=0.02874350040329723`，`long_mse=0.03612076791780671`。
 - P3 重要观察：当前 seed=0 下 independent 强于 concat，且两者 relation metrics 都未优于 repeat；P4/P5 必须同时报告 independent 与 concat，不得只用“赢 concat”包装 relation-aware 结论。
 - 下一步进入 P4：实现 relation-aware joint predictor；必须复用 P2 evaluator 和 P3 training/checkpoint contract。
+- 已新建 P4 计划文档：`docs/ai/context/20260603-202101-forecasting-p4-relation-plan.md`；P4 只实现 relation-aware joint predictor、relation feature extractor、训练/eval 兼容和单 seed 验收，不进入 P5 multi-seed 或 ablation。
+- P4 第一版 relation features 固定为 relative root translation、relative root velocity、root distance、relative root orientation，默认仍使用 normalized active-vector MSE，不默认加入 relation loss。
+- P4 最低指标门槛：`future_mse <= concat future_mse`、`long_mse < concat long_mse`，并且至少一个 relation metric 优于 concat；强门槛是同时优于 independent。
+- Forecasting P4 已完成，结果记录见 `docs/ai/context/20260603-202924-forecasting-p4-relation-result.md`。
+- P4 新增实现：`utils.forecasting_motion.extract_relation_features`、`model.forecasting.RelationAwareForecastingModel`；扩展 `train/train_forecasting.py` 和 `eval/eval_forecasting.py` 支持 `--model_type relation`。
+- P4 relation official 训练已通过：`save/forecasting/interhuman/p4_relation_h256_r128_l2_s0_5000/model000005000.pt`，`num_params=10058704`，test `future_mse=0.031443351850382925`，`long_mse=0.036962207905420166`，`relative_root_distance_error=0.40891610895554853`。
+- P4 达到最低门槛：优于 concat 的 `future_mse`、`long_mse` 和 `relative_root_distance_error`；但未达到强门槛，未优于 independent，也未优于 repeat 的 relation metrics。
+- 下一步进入 P5：做 multi-seed、relation feature ablation、容量控制和 possible original-scale relation feature 对照；不得声称 relation-aware 全面优于 independent。
+- 已新建 P5 计划文档：`docs/ai/context/20260603-203757-forecasting-p5-plan.md`。
+- P5 必须先完成 20% 主协议的 3-seed 主表：Repeat / Independent / Concat no-relation / Relation-aware，seeds=`0,1,2`；可复用 P3/P4 的 seed=0 run，但 manifest 必须记录真实路径。
+- P5 论文主张门槛：relation-aware 的 `long_mse` mean 优于 concat，且至少 2/3 seeds 优于同 seed concat；至少一个 relation metric 的 mean 和 2/3 seeds 同时优于 concat。主表不过，不进入完整 ablation 和 P6 成功展示。
+- P5 parameter-matched concat 使用 `hidden_dim=259,num_layers=2`，参数量约 `10075415`，与 P4 relation `10058704` 相差约 `0.17%`。
+- P5 observation-ratio 补充不能直接开跑；当前 metrics 固定 `pred_len=120`，必须先扩展动态 pred_len 并保证 `pred_len=120` 结果不漂移。
+- Forecasting P5.1 基础设施已完成，结果记录见 `docs/ai/context/20260603-205954-forecasting-p5-infrastructure-result.md`。
+- P5.1 新增 relation 消融开关：`--relation_feature_set all|translation|velocity|orientation` 和 `--relation_encoder_type gru|none`；旧 P4 checkpoint config 缺少这些字段时默认按 `all+gru` 恢复。
+- P5.1 新增 `eval/eval_forecasting.py --mode aggregate --manifest PATH`，可读取已落盘 metrics/args/checkpoint metadata 并输出 `summary.json/csv/md` 和 `manifest.resolved.json`。
+- P5.1 smoke 已通过：`results/forecasting/interhuman/p5_aggregate_smoke/summary.json` 已汇总 repeat/independent/concat/relation seed0；`save/forecasting/interhuman/p5_ablation_knobs_smoke/model000000002.pt` 可独立加载评估。
+- 下一步进入 P5.2：先跑 20% 主协议 3-seed 主表；不得直接启动完整消融矩阵或 P6 成功展示。
+- Forecasting P5.2 主表 3-seed 已完成，结果记录见 `docs/ai/context/20260603-232353-forecasting-p5-main-table-result.md`。
+- P5.2 manifest 和汇总输出位于 `results/forecasting/interhuman/p5_main_150_30_120/`：`manifest.json`、`manifest.resolved.json`、`summary.json`、`summary.csv`、`summary.md`。
+- P5.2 主表 mean：repeat `future_mse=0.0368928675,long_mse=0.0511287494`；independent `future_mse=0.0287863306,long_mse=0.0362148034`；concat `future_mse=0.0320573101,long_mse=0.0380507699`；relation `future_mse=0.0317788706,long_mse=0.0373418675`。
+- P5.2 gate 通过：relation 相对 concat 的 `long_mse` mean 更低且 same-seed 3/3 胜出；`relative_root_distance_error` mean 更低且 same-seed 3/3 胜出。允许进入 P5.3 消融表。
+- P5.2 边界必须保留：relation 不优于 independent 的 `future_mse/long_mse`，也不优于 repeat 的 relation-style metrics；论文结论只能写为 relation-aware 稳定优于 concat no-relation，不能写成全面最优。
+- 下一步进入 P5.3：训练 relation feature / encoder ablation 和 parameter-matched concat；不得直接进入 P6 success showcase。
+- Forecasting P5.3 消融表 3-seed 已完成，结果记录见 `docs/ai/context/20260604-085116-forecasting-p5-ablation-result.md`。
+- P5.3 manifest 和汇总输出位于 `results/forecasting/interhuman/p5_ablation_150_30_120/`：`manifest.json`、`manifest.resolved.json`、`summary.json`、`summary.csv`、`summary.md`。
+- P5.3 新增 15 个训练 run：parameter-matched concat `h259_l2`、relation no-encoder all-features、translation-only GRU、velocity-only GRU、orientation-only GRU，各 seeds=`0,1,2`；full relation 和 concat no-relation 复用 P5.2/P3/P4 run。
+- P5.3 parameter-matched concat gate 通过：all-features relation `long_mse=0.0373418675` 优于 h259 concat `0.0378088307`，`relative_root_distance_error=0.4220982101` 优于 `0.4913293425`，same-seed 均为 3/3。
+- P5.3 relation encoder gate 通过但幅度小：with-encoder `long_mse=0.0373418675` 优于 no-encoder `0.0375836698`，same-seed 2/3；`relative_root_distance_error=0.4220982101` 优于 `0.4320849805`，same-seed 2/3。with-encoder 在 `relative_orientation_error` 和 `inter_person_distance_consistency` 上不优于 no-encoder。
+- P5.3 relation feature gate 通过：all-features relation 的 `long_mse` mean 优于 translation/velocity/orientation 单特征；`relative_root_distance_error` mean 也优于三个单特征。velocity-only 的 `long_mse=0.0373630645` 与 all-features `0.0373418675` 很接近，且 same-seed long_mse 仅 all-features 1/3 胜出，必须在论文里保留该边界。
+- 允许进入 P6 qualitative / paper figure 准备；但论文主张仍只能写 relation-aware 相对 concat no-relation 与 parameter-matched concat 的稳定收益，不能写全面优于 independent 或所有 relation metrics 全面改善。
+- P5.4 observation-ratio 仍未启动；若要做，必须先扩展动态 `pred_len` metrics contract，P5.4 不阻塞当前 20% 主协议进入 P6。
+- 已按用户要求使用 `using-superpowers` 基于最终正式设计文档新建 P6 设计文档：`docs/ai/context/20260604-085953-forecasting-p6-qualitative-design.md`。
+- P6 范围锁定为 qualitative / paper figure 准备：只做 sample-level metrics、npy、distance/orientation/long_mse curves 和可选 render；不训练新模型，不改 P2 metrics key，不启动 P5.4。
+- P6 主 qualitative 使用 seed0 representative checkpoints：independent=`save/forecasting/interhuman/p3_independent_h256_l2_s0_5000/model000005000.pt`，concat=`save/forecasting/interhuman/p3_concat_h256_l2_s0_5000/model000005000.pt`，relation=`save/forecasting/interhuman/p4_relation_h256_r128_l2_s0_5000/model000005000.pt`；3-seed 结论仍以 P5 表格为准。
+- P6 样本选择必须覆盖 success / close / failure / boundary，保存 `selection.json/csv`；不得只挑成功样本。
+- 下一步按 P6 设计实现 `sample/visualize_forecasting.py`，优先完成 npy、per-sample metrics 和曲线输出，render 不阻塞验收。
+- 已新建 P6 计划文档：`docs/ai/context/20260604-090635-forecasting-p6-plan.md`。
+- P6 实现计划分为：P6.1 sample-level metrics/curves helper，P6.2 seed0 checkpoints 全 test 推理，P6.3 自动样本选择，P6.4 qualitative 数据包和曲线落盘，P6.5 验收与结果记录。
+- P6 允许小范围修改 `utils/forecasting_metrics.py` 新增 helper，但不得改变 `compute_forecasting_metrics` 的 key 和行为；`eval/eval_forecasting.py` 暂不扩展，避免 evaluator 职责继续膨胀。
+- Forecasting P6 qualitative 已完成，结果记录见 `docs/ai/context/20260604-091820-forecasting-p6-qualitative-result.md`。
+- P6 新增实现：`sample/visualize_forecasting.py`；扩展 `utils/forecasting_metrics.py` 增加 sample-level / per-frame helper，未改变 `compute_forecasting_metrics` 的 key 和行为。
+- P6 主输出位于 `results/forecasting/interhuman/p6_qualitative_150_30_120/`，包含 `run_config.json`、`metrics_per_sample_all.{json,csv}`、`selection.{json,csv}`、`summary.md` 和 8 个 qualitative sample 目录。
+- P6 selected samples 覆盖 success / close / failure / boundary 各 2 个：success=`4860,4618`，close=`2508,2627`，failure=`2194,625`，boundary=`4095,2613`。
+- P6 验收已通过：compileall、P6 主命令、selection 类别覆盖、8 个样本文件完整、所有 obs/gt/pred npy finite、曲线图生成、P2 metrics_sanity 回归全 0。
+- P6 结论边界：qualitative 支持 relation-aware 在部分样本中改善 long-horizon error 和 relative root distance，但失败/边界样本证明不能声称全面优于 concat 或 independent；P6 只能解释 P5 主表，不能替代 P5 全 test aggregate。
 
 ## 2026-06-03 Skill 安装
 

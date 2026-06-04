@@ -6,6 +6,8 @@ from pathlib import Path
 import h5py
 import torch
 
+from utils.rotation_conversions import rotation_6d_to_matrix
+
 
 NUM_PERSONS = 2
 NUM_BODY_JOINTS = 24
@@ -16,6 +18,26 @@ PERSON_DIM = ROT_DIM + TRANSL_DIM
 H5_JOINTS = 25
 H5_CHANNELS = 12
 EPS = 1e-6
+RELATION_FEATURE_DIM = 16
+RELATION_FEATURE_SETS = ("all", "translation", "velocity", "orientation")
+RELATION_FEATURE_DIMS = {
+    "all": 16,
+    "translation": 3,
+    "velocity": 3,
+    "orientation": 9,
+}
+RELATION_FEATURE_NAMES = (
+    "relative_root_translation",
+    "relative_root_velocity",
+    "root_distance",
+    "relative_root_orientation",
+)
+RELATION_FEATURE_NAMES_BY_SET = {
+    "all": RELATION_FEATURE_NAMES,
+    "translation": ("relative_root_translation",),
+    "velocity": ("relative_root_velocity",),
+    "orientation": ("relative_root_orientation",),
+}
 
 
 def _as_tensor(value):
@@ -40,6 +62,35 @@ def _check_active_shape(active):
         raise ValueError(
             "active 必须是 [T,2,147]，当前 shape 为 {}".format(tuple(active.shape))
         )
+
+
+def _check_forecasting_obs_shape(obs):
+    if obs.dim() != 4:
+        raise ValueError("obs 必须是 [B,T,2,147]，当前维度数为 {}".format(obs.dim()))
+    if obs.shape[2] != NUM_PERSONS or obs.shape[3] != PERSON_DIM:
+        raise ValueError("obs 必须是 [B,T,2,147]，当前 shape 为 {}".format(tuple(obs.shape)))
+    if not torch.isfinite(obs).all():
+        raise ValueError("obs 存在非有限数值")
+
+
+def relation_feature_dim(feature_set):
+    if feature_set not in RELATION_FEATURE_DIMS:
+        raise ValueError(
+            "relation_feature_set 必须是 {}，当前为 {}".format(
+                RELATION_FEATURE_SETS, feature_set
+            )
+        )
+    return int(RELATION_FEATURE_DIMS[feature_set])
+
+
+def relation_feature_names(feature_set):
+    if feature_set not in RELATION_FEATURE_NAMES_BY_SET:
+        raise ValueError(
+            "relation_feature_set 必须是 {}，当前为 {}".format(
+                RELATION_FEATURE_SETS, feature_set
+            )
+        )
+    return tuple(RELATION_FEATURE_NAMES_BY_SET[feature_set])
 
 
 def extract_active_motion(motion_h5):
@@ -72,6 +123,61 @@ def restore_active_motion(active):
     )
     motion[:, H5_JOINTS - 1, 6:9] = active[:, 1, ROT_DIM:PERSON_DIM]
     return motion
+
+
+def extract_relation_features(obs, feature_set="all"):
+    obs = _as_tensor(obs)
+    _check_forecasting_obs_shape(obs)
+    if feature_set not in RELATION_FEATURE_SETS:
+        raise ValueError(
+            "relation_feature_set 必须是 {}，当前为 {}".format(
+                RELATION_FEATURE_SETS, feature_set
+            )
+        )
+
+    batch_size = obs.shape[0]
+    num_frames = obs.shape[1]
+    translation = obs[..., ROT_DIM:PERSON_DIM]
+    rel_translation = translation[:, :, 0] - translation[:, :, 1]
+
+    velocity = translation.new_zeros(translation.shape)
+    if num_frames > 1:
+        velocity[:, 1:] = translation[:, 1:] - translation[:, :-1]
+    rel_velocity = velocity[:, :, 0] - velocity[:, :, 1]
+
+    root_distance = torch.norm(rel_translation, dim=-1, keepdim=True)
+    root_rot_a = obs[:, :, 0, :ROT6D_DIM]
+    root_rot_b = obs[:, :, 1, :ROT6D_DIM]
+    rot_a = rotation_6d_to_matrix(root_rot_a)
+    rot_b = rotation_6d_to_matrix(root_rot_b)
+    rel_orientation = torch.matmul(rot_a.transpose(-1, -2), rot_b).reshape(
+        batch_size, num_frames, 9
+    )
+
+    if feature_set == "all":
+        features = torch.cat(
+            [rel_translation, rel_velocity, root_distance, rel_orientation], dim=-1
+        )
+    elif feature_set == "translation":
+        features = rel_translation
+    elif feature_set == "velocity":
+        features = rel_velocity
+    elif feature_set == "orientation":
+        features = rel_orientation
+    else:
+        raise ValueError("unsupported relation_feature_set: {}".format(feature_set))
+
+    features = features.contiguous()
+    expected_dim = relation_feature_dim(feature_set)
+    if features.shape[-1] != expected_dim:
+        raise ValueError(
+            "relation feature dim 应为 {}，实际为 {}".format(
+                expected_dim, features.shape[-1]
+            )
+        )
+    if not torch.isfinite(features).all():
+        raise ValueError("relation features 存在非有限数值")
+    return features
 
 
 class ForecastingNormalizer(object):
