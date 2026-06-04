@@ -1,10 +1,18 @@
 import torch
 from torch import nn
 
-from utils.forecasting_motion import NUM_PERSONS, PERSON_DIM
+from utils.forecasting_motion import (
+    NUM_PERSONS,
+    PERSON_DIM,
+    RELATION_FEATURE_SETS,
+    extract_relation_features,
+    relation_feature_dim as relation_feature_dim_for_set,
+    relation_feature_names,
+)
 
 
-FORECASTING_MODEL_TYPES = ("independent", "concat")
+FORECASTING_MODEL_TYPES = ("independent", "concat", "relation")
+RELATION_ENCODER_TYPES = ("gru", "none")
 
 
 def _check_obs(obs, obs_len, person_dim):
@@ -108,8 +116,141 @@ class ConcatForecastingModel(nn.Module):
         )
 
 
-def _model_config(model_type, obs_len, pred_len, person_dim, hidden_dim, num_layers):
-    return {
+class RelationAwareForecastingModel(nn.Module):
+    def __init__(
+        self,
+        obs_len=30,
+        pred_len=120,
+        person_dim=PERSON_DIM,
+        hidden_dim=256,
+        num_layers=2,
+        relation_hidden_dim=128,
+        relation_num_layers=1,
+        relation_feature_dim=None,
+        relation_features=None,
+        relation_feature_set="all",
+        relation_encoder_type="gru",
+    ):
+        super(RelationAwareForecastingModel, self).__init__()
+        self.model_type = "relation"
+        self.obs_len = int(obs_len)
+        self.pred_len = int(pred_len)
+        self.person_dim = int(person_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.num_layers = int(num_layers)
+        self.relation_hidden_dim = int(relation_hidden_dim)
+        self.relation_num_layers = int(relation_num_layers)
+        self.relation_feature_set = str(relation_feature_set)
+        self.relation_encoder_type = str(relation_encoder_type)
+        if self.relation_feature_set not in RELATION_FEATURE_SETS:
+            raise ValueError(
+                "relation_feature_set 必须是 {}，当前为 {}".format(
+                    RELATION_FEATURE_SETS, self.relation_feature_set
+                )
+            )
+        if self.relation_encoder_type not in RELATION_ENCODER_TYPES:
+            raise ValueError(
+                "relation_encoder_type 必须是 {}，当前为 {}".format(
+                    RELATION_ENCODER_TYPES, self.relation_encoder_type
+                )
+            )
+        expected_feature_dim = relation_feature_dim_for_set(self.relation_feature_set)
+        if relation_feature_dim is None:
+            relation_feature_dim = expected_feature_dim
+        if int(relation_feature_dim) != expected_feature_dim:
+            raise ValueError(
+                "relation_feature_dim={} 与 feature_set={} 的期望维度 {} 不一致".format(
+                    relation_feature_dim, self.relation_feature_set, expected_feature_dim
+                )
+            )
+        self.relation_feature_dim = int(relation_feature_dim)
+        self.relation_features = list(
+            relation_features or relation_feature_names(self.relation_feature_set)
+        )
+        self.input_dim = NUM_PERSONS * self.person_dim
+
+        self.person_encoder = nn.GRU(
+            input_size=self.person_dim,
+            hidden_size=self.hidden_dim,
+            num_layers=self.num_layers,
+            batch_first=True,
+        )
+        if self.relation_encoder_type == "gru":
+            self.relation_encoder = nn.GRU(
+                input_size=self.relation_feature_dim,
+                hidden_size=self.relation_hidden_dim,
+                num_layers=self.relation_num_layers,
+                batch_first=True,
+            )
+        else:
+            self.relation_encoder = nn.Linear(
+                self.relation_feature_dim, self.relation_hidden_dim
+            )
+        self.fusion = nn.Sequential(
+            nn.Linear(NUM_PERSONS * self.hidden_dim + self.relation_hidden_dim, self.hidden_dim),
+            nn.ReLU(),
+        )
+        self.decoder = _FutureDecoder(self.hidden_dim, self.pred_len * self.input_dim)
+
+    def forward(self, obs):
+        _check_obs(obs, self.obs_len, self.person_dim)
+        batch_size = obs.shape[0]
+
+        person_x = obs.permute(0, 2, 1, 3).contiguous().view(
+            batch_size * NUM_PERSONS, self.obs_len, self.person_dim
+        )
+        _, person_hidden = self.person_encoder(person_x)
+        person_hidden = person_hidden[-1].view(batch_size, NUM_PERSONS * self.hidden_dim)
+
+        relation_features = extract_relation_features(obs, feature_set=self.relation_feature_set)
+        if relation_features.shape[-1] != self.relation_feature_dim:
+            raise ValueError(
+                "relation feature dim 应为 {}，实际为 {}".format(
+                    self.relation_feature_dim, relation_features.shape[-1]
+                )
+            )
+        if self.relation_encoder_type == "gru":
+            _, relation_hidden = self.relation_encoder(relation_features)
+            relation_hidden = relation_hidden[-1]
+        else:
+            relation_hidden = self.relation_encoder(relation_features.mean(dim=1))
+
+        joint_hidden = self.fusion(torch.cat([person_hidden, relation_hidden], dim=-1))
+        future = self.decoder(joint_hidden)
+        return future.view(batch_size, self.pred_len, NUM_PERSONS, self.person_dim).contiguous()
+
+    def config(self):
+        return _model_config(
+            self.model_type,
+            self.obs_len,
+            self.pred_len,
+            self.person_dim,
+            self.hidden_dim,
+            self.num_layers,
+            relation_hidden_dim=self.relation_hidden_dim,
+            relation_num_layers=self.relation_num_layers,
+            relation_feature_dim=self.relation_feature_dim,
+            relation_features=self.relation_features,
+            relation_feature_set=self.relation_feature_set,
+            relation_encoder_type=self.relation_encoder_type,
+        )
+
+
+def _model_config(
+    model_type,
+    obs_len,
+    pred_len,
+    person_dim,
+    hidden_dim,
+    num_layers,
+    relation_hidden_dim=None,
+    relation_num_layers=None,
+    relation_feature_dim=None,
+    relation_features=None,
+    relation_feature_set=None,
+    relation_encoder_type=None,
+):
+    config = {
         "model_type": model_type,
         "obs_len": int(obs_len),
         "pred_len": int(pred_len),
@@ -117,6 +258,20 @@ def _model_config(model_type, obs_len, pred_len, person_dim, hidden_dim, num_lay
         "hidden_dim": int(hidden_dim),
         "num_layers": int(num_layers),
     }
+    if model_type == "relation":
+        relation_feature_set = relation_feature_set or "all"
+        relation_encoder_type = relation_encoder_type or "gru"
+        if relation_feature_dim is None:
+            relation_feature_dim = relation_feature_dim_for_set(relation_feature_set)
+        config["relation_hidden_dim"] = int(relation_hidden_dim)
+        config["relation_num_layers"] = int(relation_num_layers)
+        config["relation_feature_dim"] = int(relation_feature_dim)
+        config["relation_features"] = list(
+            relation_features or relation_feature_names(relation_feature_set)
+        )
+        config["relation_feature_set"] = str(relation_feature_set)
+        config["relation_encoder_type"] = str(relation_encoder_type)
+    return config
 
 
 def create_forecasting_model(
@@ -126,6 +281,12 @@ def create_forecasting_model(
     person_dim=PERSON_DIM,
     hidden_dim=256,
     num_layers=2,
+    relation_hidden_dim=128,
+    relation_num_layers=1,
+    relation_feature_dim=None,
+    relation_features=None,
+    relation_feature_set="all",
+    relation_encoder_type="gru",
 ):
     if model_type == "independent":
         return IndependentForecastingModel(
@@ -143,7 +304,21 @@ def create_forecasting_model(
             hidden_dim=hidden_dim,
             num_layers=num_layers,
         )
-    raise ValueError("P3 只支持 {}，当前为 {}".format(FORECASTING_MODEL_TYPES, model_type))
+    if model_type == "relation":
+        return RelationAwareForecastingModel(
+            obs_len=obs_len,
+            pred_len=pred_len,
+            person_dim=person_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            relation_hidden_dim=relation_hidden_dim,
+            relation_num_layers=relation_num_layers,
+            relation_feature_dim=relation_feature_dim,
+            relation_features=relation_features,
+            relation_feature_set=relation_feature_set,
+            relation_encoder_type=relation_encoder_type,
+        )
+    raise ValueError("forecasting model 支持 {}，当前为 {}".format(FORECASTING_MODEL_TYPES, model_type))
 
 
 def create_forecasting_model_from_config(config):
