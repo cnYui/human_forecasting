@@ -71,19 +71,7 @@ def _relative_rotation(value):
 
 
 def _relative_orientation_error(pred, target, eps=1e-6):
-    rel_pred = _relative_rotation(pred)
-    rel_target = _relative_rotation(target)
-    rot_error = torch.matmul(rel_pred.transpose(-1, -2), rel_target)
-    trace = rot_error[..., 0, 0] + rot_error[..., 1, 1] + rot_error[..., 2, 2]
-    cos_angle = (trace - 1.0) * 0.5
-    cos_angle = torch.clamp(cos_angle, -1.0, 1.0)
-    angle = torch.acos(cos_angle)
-    same_root = (pred[:, :, :, 0:6] == target[:, :, :, 0:6]).view(
-        pred.shape[0], pred.shape[1], -1
-    ).all(dim=-1)
-    # 完美预测必须返回 0，但不能把真实的微小朝向误差吞掉。
-    angle = torch.where(same_root, torch.zeros_like(angle), angle)
-    return angle.mean()
+    return relative_orientation_error_sequence(pred, target, eps=eps).mean()
 
 
 def _inter_person_distance_consistency(pred, target, obs):
@@ -96,6 +84,67 @@ def _inter_person_distance_consistency(pred, target, obs):
     pred_delta = pred_full[:, 1:] - pred_full[:, :-1]
     target_delta = target_full[:, 1:] - target_full[:, :-1]
     return torch.abs(pred_delta - target_delta).mean()
+
+
+def root_distance_sequence(value):
+    if value.dim() != 4:
+        raise ValueError("value 必须是 [B,T,2,147]，当前维度数为 {}".format(value.dim()))
+    if value.shape[2] != NUM_PERSONS or value.shape[3] != PERSON_DIM:
+        raise ValueError("value 必须是 [B,T,2,147]，当前为 {}".format(tuple(value.shape)))
+    if not torch.isfinite(value).all():
+        raise ValueError("value 存在非有限数值")
+    return _root_distance(value)
+
+
+def relative_orientation_error_sequence(pred, target, eps=1e-6):
+    if pred.dim() != 4 or target.dim() != 4:
+        raise ValueError("pred/target 必须是 [B,T,2,147]")
+    if tuple(pred.shape) != tuple(target.shape):
+        raise ValueError("pred/target shape 必须一致，当前为 {} / {}".format(tuple(pred.shape), tuple(target.shape)))
+    if pred.shape[2] != NUM_PERSONS or pred.shape[3] != PERSON_DIM:
+        raise ValueError("pred 必须是 [B,T,2,147]，当前为 {}".format(tuple(pred.shape)))
+    for name, tensor in (("pred", pred), ("target", target)):
+        if not torch.isfinite(tensor).all():
+            raise ValueError("{} 存在非有限数值".format(name))
+
+    rel_pred = _relative_rotation(pred)
+    rel_target = _relative_rotation(target)
+    rot_error = torch.matmul(rel_pred.transpose(-1, -2), rel_target)
+    trace = rot_error[..., 0, 0] + rot_error[..., 1, 1] + rot_error[..., 2, 2]
+    cos_angle = (trace - 1.0) * 0.5
+    cos_angle = torch.clamp(cos_angle, -1.0, 1.0)
+    angle = torch.acos(cos_angle)
+    same_root = (pred[:, :, :, 0:6] == target[:, :, :, 0:6]).view(
+        pred.shape[0], pred.shape[1], -1
+    ).all(dim=-1)
+    # 完美预测必须返回 0，但不能把真实的微小朝向误差吞掉。
+    return torch.where(same_root, torch.zeros_like(angle), angle)
+
+
+def per_frame_active_mse(pred, target):
+    if pred.dim() != 4 or target.dim() != 4:
+        raise ValueError("pred/target 必须是 [B,T,2,147]")
+    if tuple(pred.shape) != tuple(target.shape):
+        raise ValueError("pred/target shape 必须一致，当前为 {} / {}".format(tuple(pred.shape), tuple(target.shape)))
+    if pred.shape[2] != NUM_PERSONS or pred.shape[3] != PERSON_DIM:
+        raise ValueError("pred 必须是 [B,T,2,147]，当前为 {}".format(tuple(pred.shape)))
+    for name, tensor in (("pred", pred), ("target", target)):
+        if not torch.isfinite(tensor).all():
+            raise ValueError("{} 存在非有限数值".format(name))
+    diff = pred - target
+    return (diff * diff).mean(dim=(2, 3))
+
+
+def compute_forecasting_metrics_for_sample(pred, target, obs):
+    if pred.dim() == 3:
+        pred = pred.unsqueeze(0)
+    if target.dim() == 3:
+        target = target.unsqueeze(0)
+    if obs.dim() == 3:
+        obs = obs.unsqueeze(0)
+    if pred.shape[0] != 1:
+        raise ValueError("sample-level metrics 只接受单样本，当前 batch_size={}".format(pred.shape[0]))
+    return compute_forecasting_metrics(pred, target, obs)
 
 
 def compute_forecasting_metrics(pred, target, obs):
