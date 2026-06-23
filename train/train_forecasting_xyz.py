@@ -169,6 +169,15 @@ def _build_model(args):
         normalize_inputs=args.normalize_inputs,
         activation=args.activation,
         learned_embedding=args.learned_embedding,
+        relation_weight=args.jrt_relation_weight,
+        root_loss_weight=args.t2p_root_loss_weight,
+        local_loss_weight=args.t2p_local_loss_weight,
+        dummf_num_samples=args.dummf_num_samples,
+        dummf_global_loss_weight=args.dummf_global_loss_weight,
+        dummf_root_loss_weight=args.dummf_root_loss_weight,
+        dummf_local_loss_weight=args.dummf_local_loss_weight,
+        dummf_velocity_loss_weight=args.dummf_velocity_loss_weight,
+        dummf_diversity_weight=args.dummf_diversity_weight,
     )
 
 
@@ -177,6 +186,29 @@ def _train_step(model, converter, obs, target, args, device):
         obs_xyz = active_to_xyz(obs, device=device, converter=converter)
         target_xyz = active_to_xyz(target, device=device, converter=converter)
     if hasattr(model, "training_loss"):
+        if args.model_type == "jrt_xyz":
+            loss = model.training_loss(
+                obs_xyz,
+                target_xyz,
+                aux_weight=args.aux_weight,
+                relation_weight=args.jrt_relation_weight,
+            )
+            if not torch.isfinite(loss):
+                raise ValueError("训练 loss 为非有限数值: {}".format(float(loss.detach().cpu().item())))
+            return loss
+        if args.model_type == "dummf_interhuman_xyz":
+            loss = model.training_loss(
+                obs_xyz,
+                target_xyz,
+                global_loss_weight=args.dummf_global_loss_weight,
+                root_loss_weight=args.dummf_root_loss_weight,
+                local_loss_weight=args.dummf_local_loss_weight,
+                velocity_loss_weight=args.dummf_velocity_loss_weight,
+                diversity_weight=args.dummf_diversity_weight,
+            )
+            if not torch.isfinite(loss):
+                raise ValueError("训练 loss 为非有限数值: {}".format(float(loss.detach().cpu().item())))
+            return loss
         loss = model.training_loss(
             obs_xyz,
             target_xyz,
@@ -320,6 +352,15 @@ def build_arg_parser():
     parser.add_argument("--normalize_inputs", action="store_true")
     parser.add_argument("--learned_embedding", action="store_true", default=True)
     parser.add_argument("--aux_weight", type=float, default=0.2)
+    parser.add_argument("--jrt_relation_weight", type=float, default=1.0)
+    parser.add_argument("--t2p_root_loss_weight", type=float, default=1.0)
+    parser.add_argument("--t2p_local_loss_weight", type=float, default=1.0)
+    parser.add_argument("--dummf_num_samples", type=int, default=5)
+    parser.add_argument("--dummf_global_loss_weight", type=float, default=1.0)
+    parser.add_argument("--dummf_root_loss_weight", type=float, default=1.0)
+    parser.add_argument("--dummf_local_loss_weight", type=float, default=1.0)
+    parser.add_argument("--dummf_velocity_loss_weight", type=float, default=0.2)
+    parser.add_argument("--dummf_diversity_weight", type=float, default=0.01)
     parser.add_argument("--metamask", action="store_true", default=True)
     parser.add_argument("--no_metamask", dest="metamask", action="store_false")
     parser.add_argument("--residual_connection", action="store_true", default=True)
