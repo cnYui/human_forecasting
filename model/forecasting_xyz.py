@@ -1,15 +1,25 @@
 import torch
 from torch import nn
 
+from model.forecasting_dummf import DuMMFInterHumanXYZ
+from model.forecasting_jrt import JointRelationTransformerXYZ
 from model.forecasting_somoformer import (
     JointSpaceSoMoFormer,
     OfficialSoMoFormerXYZ,
     count_parameters,
     ensure_xyz_prediction_shape,
 )
+from model.forecasting_t2p import T2PInterHumanXYZ
 
 
-XYZ_FORECASTING_MODEL_TYPES = ("somoformer_xyz", "independent_pair_xyz", "official_somoformer_xyz")
+XYZ_FORECASTING_MODEL_TYPES = (
+    "somoformer_xyz",
+    "independent_pair_xyz",
+    "official_somoformer_xyz",
+    "jrt_xyz",
+    "t2p_interhuman_xyz",
+    "dummf_interhuman_xyz",
+)
 
 
 def _check_xyz_obs(obs, obs_len, num_persons=2, num_joints=24, coord_dim=3):
@@ -130,6 +140,15 @@ def create_xyz_forecasting_model(
     normalize_inputs=False,
     activation="relu",
     learned_embedding=True,
+    relation_weight=1.0,
+    root_loss_weight=1.0,
+    local_loss_weight=1.0,
+    dummf_num_samples=5,
+    dummf_global_loss_weight=1.0,
+    dummf_root_loss_weight=1.0,
+    dummf_local_loss_weight=1.0,
+    dummf_velocity_loss_weight=0.2,
+    dummf_diversity_weight=0.01,
 ):
     if model_type == "independent_pair_xyz":
         return IndependentPairXYZModel(
@@ -169,6 +188,42 @@ def create_xyz_forecasting_model(
             activation=activation,
             learned_embedding=learned_embedding,
         )
+    if model_type == "jrt_xyz":
+        return JointRelationTransformerXYZ(
+            obs_len=obs_len,
+            pred_len=pred_len,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            dropout=dropout,
+            relation_weight=relation_weight,
+        )
+    if model_type == "t2p_interhuman_xyz":
+        return T2PInterHumanXYZ(
+            obs_len=obs_len,
+            pred_len=pred_len,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            root_loss_weight=root_loss_weight,
+            local_loss_weight=local_loss_weight,
+        )
+    if model_type == "dummf_interhuman_xyz":
+        return DuMMFInterHumanXYZ(
+            obs_len=obs_len,
+            pred_len=pred_len,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+            num_samples=dummf_num_samples,
+            global_loss_weight=dummf_global_loss_weight,
+            root_loss_weight=dummf_root_loss_weight,
+            local_loss_weight=dummf_local_loss_weight,
+            velocity_loss_weight=dummf_velocity_loss_weight,
+            diversity_weight=dummf_diversity_weight,
+        )
     raise ValueError("unsupported xyz model_type: {}".format(model_type))
 
 
@@ -196,4 +251,13 @@ def create_xyz_forecasting_model_from_config(config):
         normalize_inputs=config.get("normalize_inputs", False),
         activation=config.get("activation", "relu"),
         learned_embedding=config.get("learned_embedding", True),
+        relation_weight=config.get("relation_weight", 1.0),
+        root_loss_weight=config.get("root_loss_weight", 1.0),
+        local_loss_weight=config.get("local_loss_weight", 1.0),
+        dummf_num_samples=config.get("num_samples", 5),
+        dummf_global_loss_weight=config.get("global_loss_weight", 1.0),
+        dummf_root_loss_weight=config.get("root_loss_weight", 1.0),
+        dummf_local_loss_weight=config.get("local_loss_weight", 1.0),
+        dummf_velocity_loss_weight=config.get("velocity_loss_weight", 0.2),
+        dummf_diversity_weight=config.get("diversity_weight", 0.01),
     )
