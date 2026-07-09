@@ -6,6 +6,7 @@ from .ntu_label import (
     scan_ntu_label_forecasting_entries,
     summarize_entries,
 )
+from .ntu_label_xyz_cache import NTULabelXYZCacheDataset, ntu_label_xyz_cache_collate
 from .tensors import forecasting_collate
 
 
@@ -17,4 +18,6 @@ __all__ = [
     "parse_ntu_action_label",
     "scan_ntu_label_forecasting_entries",
     "summarize_entries",
+    "NTULabelXYZCacheDataset",
+    "ntu_label_xyz_cache_collate",
 ]
